@@ -114,6 +114,17 @@ FPS are tested via TensorRT on 3090 with FP16 precision. Please refer to Tab.2 i
 
 5. [TensorRT Implement Writen In C++ With Cuda Acceleration](https://github.com/drilistbox/TRT_FlashOcc)
 
+## Minimal standalone inference
+
+For a pure-PyTorch forward pass without the MMDetection3D runner, use
+`tools/custom_infer.py`. The script rebuilds the FlashOcc modules from a config,
+loads a checkpoint with `torch.load`, and consumes a simple camera JSON that
+specifies image paths plus intrinsic/extrinsic matrices (or directly reads an
+Xtreme1-style scene folder via `--xtreme1-root`, including batch runs over
+every timestamp). See
+[`doc/custom_infer.md`](doc/custom_infer.md) for detailed instructions and an
+example JSON template.
+
 
 ## Acknowledgement
 Many thanks to the authors of [BEVDet](https://github.com/HuangJunJie2017/BEVDet), [FB-BEV](https://github.com/NVlabs/FB-BEV.git),
