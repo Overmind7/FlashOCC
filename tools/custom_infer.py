@@ -281,16 +281,31 @@ def prepare_single_frame(
     return imgs, sensor2egos, ego2globals, intrins, post_rots, post_trans, lidar2imgs
 
 
+def _strip_type(cfg: Dict) -> Dict:
+    """Return a shallow copy of a config dict without the MMCV ``type`` key.
+
+    The standalone inference path directly instantiates PyTorch modules instead
+    of using MMCV's registry/build mechanism, so passing the ``type`` field
+    triggers ``__init__`` argument errors. Removing it keeps the configs
+    compatible with the original training files (e.g.,
+    ``projects/configs/flashocc/flashocc-r50.py``).
+    """
+
+    cleaned = cfg.copy()
+    cleaned.pop("type", None)
+    return cleaned
+
+
 class FlashOccInfer(nn.Module):
     def __init__(self, model_cfg: Dict):
         super().__init__()
-        img_backbone_cfg = model_cfg["img_backbone"].copy()
+        img_backbone_cfg = _strip_type(model_cfg["img_backbone"])
         self.img_backbone = ResNet(**img_backbone_cfg)
-        self.img_neck = CustomFPN(**model_cfg["img_neck"])
-        self.img_view_transformer = LSSViewTransformer(**model_cfg["img_view_transformer"])
-        self.img_bev_encoder_backbone = CustomResNet(**model_cfg["img_bev_encoder_backbone"])
-        self.img_bev_encoder_neck = FPN_LSS(**model_cfg["img_bev_encoder_neck"])
-        self.occ_head = BEVOCCHead2D(**model_cfg["occ_head"])
+        self.img_neck = CustomFPN(**_strip_type(model_cfg["img_neck"]))
+        self.img_view_transformer = LSSViewTransformer(**_strip_type(model_cfg["img_view_transformer"]))
+        self.img_bev_encoder_backbone = CustomResNet(**_strip_type(model_cfg["img_bev_encoder_backbone"]))
+        self.img_bev_encoder_neck = FPN_LSS(**_strip_type(model_cfg["img_bev_encoder_neck"]))
+        self.occ_head = BEVOCCHead2D(**_strip_type(model_cfg["occ_head"]))
 
     def encode_images(self, imgs: torch.Tensor) -> torch.Tensor:
         b, n, c, h, w = imgs.shape
