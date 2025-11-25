@@ -7,6 +7,8 @@ import numpy as np
 import open3d as o3d
 import torch
 
+from tqdm import tqdm
+
 from tools.analysis_tools.vis_occ import FREE_LABEL, VOXEL_SIZE, show_occ
 
 
@@ -156,9 +158,9 @@ def process_scene(
     vis = setup_visualizer()
     video_writer = None
 
-    for frame_id in frame_ids:
+    for frame_id in tqdm(frame_ids):
         pred_frame_dir = os.path.join(pred_scene_path, frame_id)
-        data_frame_dir = os.path.join(data_scene_path, frame_id)
+        # data_frame_dir = os.path.join(data_scene_path, frame_id)
         occ_path = os.path.join(pred_frame_dir, 'occ_pred.npz')
         if not os.path.exists(occ_path):
             continue
@@ -166,7 +168,7 @@ def process_scene(
         occ_data = np.load(occ_path)['occ']
         occ_canvas = render_occ_frame(vis, occ_data, VOXEL_SIZE)
 
-        camera_imgs = [read_image_if_exists(os.path.join(data_frame_dir, name)) for name in CAMERA_FILENAMES]
+        camera_imgs = [read_image_if_exists(os.path.join(data_scene_path, name, frame_id)) for name in CAMERA_FILENAMES]
         combined = build_combined_frame(
             camera_imgs=camera_imgs,
             occ_canvas=occ_canvas,
