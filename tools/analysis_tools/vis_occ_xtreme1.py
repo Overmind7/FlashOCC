@@ -1,6 +1,7 @@
 import argparse
+import glob
 import os
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -24,17 +25,22 @@ CAMERA_TARGET_SIZE = (640, 480)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Visualize xtreme1 occupancy predictions')
-    parser.add_argument('--root-path', required=True, help='Root directory containing scene folders')
+    parser.add_argument(
+        '--pred-root',
+        required=True,
+        help='Root directory containing scene folders with occupancy predictions (occ_pred.npz)',
+    )
+    parser.add_argument(
+        '--data-root',
+        required=True,
+        help='Root directory containing scene folders with original camera images',
+    )
     parser.add_argument('--save-path', required=True, help='Output directory for visualizations')
     parser.add_argument(
         '--format', choices=['image', 'video'], default='image',
         help='Save per-frame images or videos per scene'
     )
     parser.add_argument('--fps', type=int, default=10, help='FPS for output videos')
-    parser.add_argument(
-        '--topdown-name', default='occ_topdown.png',
-        help='Optional topdown image filename inside each frame folder'
-    )
     return parser.parse_args()
 
 
@@ -51,6 +57,32 @@ def read_image_if_exists(base_path: str) -> Optional[np.ndarray]:
         candidate = f'{base_path}{ext}'
         if os.path.exists(candidate):
             return cv2.imread(candidate)
+
+    return None
+
+
+def read_image_in_dirs(base_name: str, dirs: Sequence[str]) -> Optional[np.ndarray]:
+    """Load an image by trying multiple directories and extensions.
+
+    The search first tries direct `base_name` (with and without common
+    extensions) inside each provided directory, then falls back to a
+    recursive glob to catch layouts where images are placed in nested
+    folders (e.g., `images/` or `camera/`).
+    """
+
+    for base_dir in dirs:
+        if not base_dir or not os.path.exists(base_dir):
+            continue
+
+        direct_img = read_image_if_exists(os.path.join(base_dir, base_name))
+        if direct_img is not None:
+            return direct_img
+
+        pattern = os.path.join(base_dir, '**', f'{base_name}.*')
+        for matched in glob.iglob(pattern, recursive=True):
+            img = cv2.imread(matched)
+            if img is not None:
+                return img
 
     return None
 
@@ -75,38 +107,24 @@ def letterbox_image(img: Optional[np.ndarray], target_size: Tuple[int, int]) -> 
 def build_combined_frame(
     camera_imgs: List[Optional[np.ndarray]],
     occ_canvas: np.ndarray,
-    topdown: Optional[np.ndarray],
-    target_topdown_size: Optional[Tuple[int, int]],
-) -> Tuple[np.ndarray, Optional[Tuple[int, int]]]:
+) -> np.ndarray:
     processed_cams = [letterbox_image(img, CAMERA_TARGET_SIZE) for img in camera_imgs]
     camera_strip = np.concatenate(processed_cams, axis=1)
 
-    if topdown is not None:
-        if target_topdown_size is None:
-            target_topdown_size = (occ_canvas.shape[1], occ_canvas.shape[0])
-        topdown = letterbox_image(topdown, target_topdown_size)
-
-    bottom_height = max(occ_canvas.shape[0], topdown.shape[0] if topdown is not None else 0)
     gap_y = 10
-    gap_x = 10 if topdown is not None else 0
-    topdown_width = topdown.shape[1] if topdown is not None else 0
-    content_width = occ_canvas.shape[1] + gap_x + topdown_width
-    target_width = max(camera_strip.shape[1], content_width)
-    combined = np.zeros((camera_strip.shape[0] + gap_y + bottom_height, target_width, 3), dtype=np.uint8)
+    target_width = max(camera_strip.shape[1], occ_canvas.shape[1])
+    combined = np.zeros(
+        (camera_strip.shape[0] + gap_y + occ_canvas.shape[0], target_width, 3), dtype=np.uint8
+    )
 
     cam_x = (target_width - camera_strip.shape[1]) // 2
     combined[:camera_strip.shape[0], cam_x:cam_x + camera_strip.shape[1]] = camera_strip
 
-    occ_y = camera_strip.shape[0] + gap_y + (bottom_height - occ_canvas.shape[0]) // 2
-    occ_x = (target_width - content_width) // 2
+    occ_y = camera_strip.shape[0] + gap_y
+    occ_x = (target_width - occ_canvas.shape[1]) // 2
     combined[occ_y:occ_y + occ_canvas.shape[0], occ_x:occ_x + occ_canvas.shape[1]] = occ_canvas
 
-    if topdown is not None:
-        topdown_y = camera_strip.shape[0] + gap_y + (bottom_height - topdown.shape[0]) // 2
-        topdown_x = occ_x + occ_canvas.shape[1] + gap_x
-        combined[topdown_y:topdown_y + topdown.shape[0], topdown_x:topdown_x + topdown.shape[1]] = topdown
-
-    return combined, target_topdown_size
+    return combined
 
 
 def setup_visualizer() -> o3d.visualization.VisualizerWithKeyCallback:
@@ -150,13 +168,13 @@ def render_occ_frame(
 
 
 def process_scene(
-    scene_path: str,
+    pred_scene_path: str,
+    data_scene_path: str,
     output_dir: str,
     fmt: str,
     fps: int,
-    topdown_name: str,
 ) -> None:
-    frame_ids = [d for d in os.listdir(scene_path) if os.path.isdir(os.path.join(scene_path, d))]
+    frame_ids = [d for d in os.listdir(pred_scene_path) if os.path.isdir(os.path.join(pred_scene_path, d))]
     frame_ids.sort()
     if not frame_ids:
         return
@@ -164,29 +182,26 @@ def process_scene(
     ensure_dir(output_dir)
     vis = setup_visualizer()
     video_writer = None
-    target_topdown_size: Optional[Tuple[int, int]] = None
-    topdown_expected = any(os.path.exists(os.path.join(scene_path, d, topdown_name)) for d in frame_ids)
 
     for frame_id in frame_ids:
-        frame_dir = os.path.join(scene_path, frame_id)
-        occ_path = os.path.join(frame_dir, 'occ_pred.npz')
+        pred_frame_dir = os.path.join(pred_scene_path, frame_id)
+        data_frame_dir = os.path.join(data_scene_path, frame_id)
+        occ_path = os.path.join(pred_frame_dir, 'occ_pred.npz')
         if not os.path.exists(occ_path):
             continue
 
         occ_data = np.load(occ_path)['occ']
         occ_canvas = render_occ_frame(vis, occ_data, VOXEL_SIZE)
 
-        if topdown_expected and target_topdown_size is None:
-            target_topdown_size = (occ_canvas.shape[1], occ_canvas.shape[0])
-
-        topdown_path = os.path.join(frame_dir, topdown_name)
-        topdown_img = cv2.imread(topdown_path) if os.path.exists(topdown_path) else None
-        camera_imgs = [read_image_if_exists(os.path.join(frame_dir, name)) for name in CAMERA_FILENAMES]
-        combined, target_topdown_size = build_combined_frame(
+        camera_imgs = [
+            read_image_in_dirs(name, dirs=(data_frame_dir, pred_frame_dir)) for name in CAMERA_FILENAMES
+        ]
+        missing_cams = [name for name, img in zip(CAMERA_FILENAMES, camera_imgs) if img is None]
+        if missing_cams:
+            print(f'Warning: missing camera images {missing_cams} in {data_frame_dir}')
+        combined = build_combined_frame(
             camera_imgs=camera_imgs,
             occ_canvas=occ_canvas,
-            topdown=topdown_img,
-            target_topdown_size=target_topdown_size,
         )
 
         if fmt == 'image':
@@ -198,7 +213,9 @@ def process_scene(
             if video_writer is None:
                 height, width = combined.shape[:2]
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                video_writer = cv2.VideoWriter(os.path.join(output_dir, f'{os.path.basename(scene_path)}.mp4'), fourcc, fps, (width, height))
+                video_writer = cv2.VideoWriter(
+                    os.path.join(output_dir, f'{os.path.basename(pred_scene_path)}.mp4'), fourcc, fps, (width, height)
+                )
             video_writer.write(combined)
 
     if video_writer is not None:
@@ -208,15 +225,18 @@ def process_scene(
 
 def main() -> None:
     args = parse_args()
-    scenes = [d for d in os.listdir(args.root_path) if os.path.isdir(os.path.join(args.root_path, d))]
+    scenes = [d for d in os.listdir(args.pred_root) if os.path.isdir(os.path.join(args.pred_root, d))]
     scenes.sort()
     if not scenes:
         return
 
     for scene in scenes:
-        scene_path = os.path.join(args.root_path, scene)
+        pred_scene_path = os.path.join(args.pred_root, scene)
+        data_scene_path = os.path.join(args.data_root, scene)
+        if not os.path.isdir(data_scene_path):
+            continue
         scene_output = os.path.join(args.save_path, scene)
-        process_scene(scene_path, scene_output, args.format, args.fps, args.topdown_name)
+        process_scene(pred_scene_path, data_scene_path, scene_output, args.format, args.fps)
 
 
 if __name__ == '__main__':
