@@ -311,8 +311,6 @@ class FlashOccInfer(nn.Module):
         b, n, c, h, w = imgs.shape
         imgs = imgs.view(b * n, c, h, w)
         feats = self.img_backbone(imgs)
-        if isinstance(feats, (list, tuple)):
-            feats = feats[1:]  # discard C1
         feats = self.img_neck(feats)
         if isinstance(feats, (list, tuple)):
             feats = feats[0]
