@@ -209,7 +209,9 @@ def deterministic_resize_crop(
 ) -> Tuple[Image.Image, torch.Tensor, torch.Tensor]:
     """Mirror the test-time branch of PrepareImageInputs.
 
-    Returns the resized/cropped image and its post_rot/post_tran matrices.
+    Returns the resized/cropped image and its post_rot/post_tran matrices. The
+    outputs are padded to 3D (3x3 rotation, 3 translation) to match downstream
+    expectations of shape ``(B, N, 3, 3)`` and ``(B, N, 3)``.
     """
     fH, fW = input_size
     W, H = pil_img.size
@@ -220,14 +222,15 @@ def deterministic_resize_crop(
     crop_w = int(max(0, newW - fW) / 2)
     crop = (crop_w, crop_h, crop_w + fW, crop_h + fH)
 
-    post_rot = torch.eye(2)
-    post_tran = torch.zeros(2)
+    # Keep rotation/translation 3D to align with model input expectations.
+    post_rot = torch.eye(3, dtype=torch.float32)
+    post_tran = torch.zeros(3, dtype=torch.float32)
 
     img = pil_img.resize(resize_dims)
     img = img.crop(crop)
 
-    post_rot *= resize
-    post_tran -= torch.tensor(crop[:2])
+    post_rot[:2, :2] *= resize
+    post_tran[:2] -= torch.tensor(crop[:2], dtype=torch.float32)
     return img, post_rot, post_tran
 
 
