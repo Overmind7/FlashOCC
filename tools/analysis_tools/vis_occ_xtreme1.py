@@ -1,6 +1,6 @@
 import argparse
 import os
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -14,6 +14,12 @@ CAM_LOOK_AT = np.array([0.085, 0.513, 2.485])
 CAM_FRONT = np.array([0.1, -0.055, 0.221])
 CAM_UP = np.array([0.221, 0.014, 0.975])
 CAM_ZOOM = np.array([0.3])
+CAMERA_FILENAMES = [
+    'camera_image_left',
+    'camera_image_front',
+    'camera_image_right',
+]
+CAMERA_TARGET_SIZE = (640, 480)
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,6 +41,72 @@ def parse_args() -> argparse.Namespace:
 def ensure_dir(path: str) -> None:
     if not os.path.exists(path):
         os.makedirs(path)
+
+
+def read_image_if_exists(base_path: str) -> Optional[np.ndarray]:
+    if os.path.exists(base_path):
+        return cv2.imread(base_path)
+
+    for ext in ('.png', '.jpg', '.jpeg'):
+        candidate = f'{base_path}{ext}'
+        if os.path.exists(candidate):
+            return cv2.imread(candidate)
+
+    return None
+
+
+def letterbox_image(img: Optional[np.ndarray], target_size: Tuple[int, int]) -> np.ndarray:
+    target_w, target_h = target_size
+    if img is None:
+        return np.zeros((target_h, target_w, 3), dtype=np.uint8)
+
+    h, w = img.shape[:2]
+    scale = min(target_w / w, target_h / h)
+    new_w, new_h = int(w * scale), int(h * scale)
+    resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+    canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+    x_offset = (target_w - new_w) // 2
+    y_offset = (target_h - new_h) // 2
+    canvas[y_offset:y_offset + new_h, x_offset:x_offset + new_w] = resized
+    return canvas
+
+
+def build_combined_frame(
+    camera_imgs: List[Optional[np.ndarray]],
+    occ_canvas: np.ndarray,
+    topdown: Optional[np.ndarray],
+    target_topdown_size: Optional[Tuple[int, int]],
+) -> Tuple[np.ndarray, Optional[Tuple[int, int]]]:
+    processed_cams = [letterbox_image(img, CAMERA_TARGET_SIZE) for img in camera_imgs]
+    camera_strip = np.concatenate(processed_cams, axis=1)
+
+    if topdown is not None:
+        if target_topdown_size is None:
+            target_topdown_size = (occ_canvas.shape[1], occ_canvas.shape[0])
+        topdown = letterbox_image(topdown, target_topdown_size)
+
+    bottom_height = max(occ_canvas.shape[0], topdown.shape[0] if topdown is not None else 0)
+    gap_y = 10
+    gap_x = 10 if topdown is not None else 0
+    topdown_width = topdown.shape[1] if topdown is not None else 0
+    content_width = occ_canvas.shape[1] + gap_x + topdown_width
+    target_width = max(camera_strip.shape[1], content_width)
+    combined = np.zeros((camera_strip.shape[0] + gap_y + bottom_height, target_width, 3), dtype=np.uint8)
+
+    cam_x = (target_width - camera_strip.shape[1]) // 2
+    combined[:camera_strip.shape[0], cam_x:cam_x + camera_strip.shape[1]] = camera_strip
+
+    occ_y = camera_strip.shape[0] + gap_y + (bottom_height - occ_canvas.shape[0]) // 2
+    occ_x = (target_width - content_width) // 2
+    combined[occ_y:occ_y + occ_canvas.shape[0], occ_x:occ_x + occ_canvas.shape[1]] = occ_canvas
+
+    if topdown is not None:
+        topdown_y = camera_strip.shape[0] + gap_y + (bottom_height - topdown.shape[0]) // 2
+        topdown_x = occ_x + occ_canvas.shape[1] + gap_x
+        combined[topdown_y:topdown_y + topdown.shape[0], topdown_x:topdown_x + topdown.shape[1]] = topdown
+
+    return combined, target_topdown_size
 
 
 def setup_visualizer() -> o3d.visualization.VisualizerWithKeyCallback:
@@ -77,26 +149,6 @@ def render_occ_frame(
     return occ_canvas
 
 
-def combine_topdown(
-    occ_canvas: np.ndarray,
-    topdown: Optional[np.ndarray],
-    target_topdown_size: Optional[Tuple[int, int]] = None,
-) -> Tuple[np.ndarray, Optional[Tuple[int, int]]]:
-    if topdown is None and target_topdown_size is None:
-        return occ_canvas, None
-
-    if topdown is not None:
-        topdown = cv2.cvtColor(topdown, cv2.COLOR_BGR2RGB)
-        topdown = cv2.resize(topdown, (occ_canvas.shape[1], occ_canvas.shape[0]), interpolation=cv2.INTER_LINEAR)
-        target_topdown_size = (topdown.shape[1], topdown.shape[0])
-    elif target_topdown_size is not None:
-        width, height = target_topdown_size
-        topdown = np.zeros((height, width, 3), dtype=np.uint8)
-
-    combined = np.concatenate([occ_canvas, topdown], axis=1) if topdown is not None else occ_canvas
-    return combined, target_topdown_size
-
-
 def process_scene(
     scene_path: str,
     output_dir: str,
@@ -129,14 +181,19 @@ def process_scene(
 
         topdown_path = os.path.join(frame_dir, topdown_name)
         topdown_img = cv2.imread(topdown_path) if os.path.exists(topdown_path) else None
-        combined, target_topdown_size = combine_topdown(occ_canvas, topdown_img, target_topdown_size)
+        camera_imgs = [read_image_if_exists(os.path.join(frame_dir, name)) for name in CAMERA_FILENAMES]
+        combined, target_topdown_size = build_combined_frame(
+            camera_imgs=camera_imgs,
+            occ_canvas=occ_canvas,
+            topdown=topdown_img,
+            target_topdown_size=target_topdown_size,
+        )
 
         if fmt == 'image':
             out_dir = os.path.join(output_dir, frame_id)
             ensure_dir(out_dir)
             cv2.imwrite(os.path.join(out_dir, 'occ.png'), occ_canvas)
-            if combined is not occ_canvas:
-                cv2.imwrite(os.path.join(out_dir, 'combined.png'), combined)
+            cv2.imwrite(os.path.join(out_dir, 'combined.png'), combined)
         else:
             if video_writer is None:
                 height, width = combined.shape[:2]
