@@ -10,10 +10,10 @@ import torch
 from tools.analysis_tools.vis_occ import FREE_LABEL, VOXEL_SIZE, show_occ
 
 
-CAM_LOOK_AT = np.array([-0.185, 0.513, 3.485])
-CAM_FRONT = np.array([-0.974, -0.055, 0.221])
+CAM_LOOK_AT = np.array([0.085, 0.513, 2.485])
+CAM_FRONT = np.array([0.1, -0.055, 0.221])
 CAM_UP = np.array([0.221, 0.014, 0.975])
-CAM_ZOOM = np.array([0.08])
+CAM_ZOOM = np.array([0.3])
 
 
 def parse_args() -> argparse.Namespace:
@@ -121,7 +121,7 @@ def process_scene(
         if not os.path.exists(occ_path):
             continue
 
-        occ_data = np.load(occ_path)['pred']
+        occ_data = np.load(occ_path)['occ']
         occ_canvas = render_occ_frame(vis, occ_data, VOXEL_SIZE)
 
         if topdown_expected and target_topdown_size is None:
