@@ -30,6 +30,9 @@ class OccClient(object):
         self.slop = rospy.get_param('~slop', 0.1)
         self.jpeg_quality = rospy.get_param('~jpeg_quality', 90)
         self.timeout = rospy.get_param('~timeout', 30.0)
+        self.max_rate_hz = rospy.get_param('~max_rate_hz', 0.0)
+        self.min_interval = 1.0 / self.max_rate_hz if self.max_rate_hz > 0 else 0.0
+        self.last_request_time = 0.0
 
         self.bridge = CvBridge()
         self.publisher = rospy.Publisher(self.publish_topic, String, queue_size=10)
@@ -50,6 +53,10 @@ class OccClient(object):
 
     def synced_callback(self, left_msg, right_msg, front_msg):
         try:
+            now = time.time()
+            if self.min_interval > 0 and (now - self.last_request_time) < self.min_interval:
+                rospy.logdebug_throttle(5.0, 'OccClient rate limited (max_rate_hz=%.2f)', self.max_rate_hz)
+                return
             left_cv = self.bridge.imgmsg_to_cv2(left_msg, desired_encoding='bgr8')
             right_cv = self.bridge.imgmsg_to_cv2(right_msg, desired_encoding='bgr8')
             front_cv = self.bridge.imgmsg_to_cv2(front_msg, desired_encoding='bgr8')
@@ -75,6 +82,8 @@ class OccClient(object):
             )
             elapsed = time.time() - start
             response.raise_for_status()
+
+            self.last_request_time = now
 
             result = response.json()
             result['latency_sec'] = elapsed
