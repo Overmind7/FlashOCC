@@ -34,16 +34,16 @@ class OccClient(object):
         self.bridge = CvBridge()
         self.publisher = rospy.Publisher(self.publish_topic, String, queue_size=10)
 
-        sub_left = message_filters.Subscriber(self.topic_left, Image)
-        sub_right = message_filters.Subscriber(self.topic_right, Image)
-        sub_front = message_filters.Subscriber(self.topic_front, Image)
+        self.sub_left = message_filters.Subscriber(self.topic_left, Image)
+        self.sub_right = message_filters.Subscriber(self.topic_right, Image)
+        self.sub_front = message_filters.Subscriber(self.topic_front, Image)
 
-        sync = message_filters.ApproximateTimeSynchronizer(
-            [sub_left, sub_right, sub_front],
+        self.sync = message_filters.ApproximateTimeSynchronizer(
+            [self.sub_left, self.sub_right, self.sub_front],
             queue_size=self.queue_size,
             slop=self.slop,
         )
-        sync.registerCallback(self.synced_callback)
+        self.sync.registerCallback(self.synced_callback)
 
         rospy.loginfo('OccClient initialized: %s, %s, %s -> %s',
                       self.topic_left, self.topic_right, self.topic_front, self.publish_topic)
