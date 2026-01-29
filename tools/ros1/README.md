@@ -42,5 +42,6 @@ rosrun <your_package> occ_client.py \
   _camera_left:=/camera_image_left \
   _camera_right:=/camera_image_right \
   _camera_front:=/camera_image_front \
-  _occ_topic:=/occ
+  _occ_topic:=/occ \
+  _max_rate_hz:=5.0
 ```
