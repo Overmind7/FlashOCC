@@ -233,15 +233,15 @@ class FlashOccRosNode:
 
         self.publisher = rospy.Publisher(self.occ_topic, PointCloud2, queue_size=1)
 
-        left_sub = message_filters.Subscriber(self.topic_left, RosImage)
-        right_sub = message_filters.Subscriber(self.topic_right, RosImage)
-        front_sub = message_filters.Subscriber(self.topic_front, RosImage)
-        sync = message_filters.ApproximateTimeSynchronizer(
-            [left_sub, right_sub, front_sub],
+        self.left_sub = message_filters.Subscriber(self.topic_left, RosImage)
+        self.right_sub = message_filters.Subscriber(self.topic_right, RosImage)
+        self.front_sub = message_filters.Subscriber(self.topic_front, RosImage)
+        self.sync = message_filters.ApproximateTimeSynchronizer(
+            [self.left_sub, self.right_sub, self.front_sub],
             queue_size=self.queue_size,
             slop=self.sync_slop,
         )
-        sync.registerCallback(self._on_images)
+        self.sync.registerCallback(self._on_images)
 
         rospy.loginfo("[FlashOcc] ROS1 wrapper initialized")
 
