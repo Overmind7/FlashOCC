@@ -58,6 +58,11 @@ def _resolve_camera_order(
     reverse_keys = {
         req_key: cam_name for cam_name, req_key in image_keys.items() if cam_name in camera_names
     }
+    for cam in camera_list:
+        cam_name = cam.get("name")
+        cam_key = cam.get("image_key")
+        if cam_name and cam_key:
+            reverse_keys.setdefault(cam_key, cam_name)
     order_keys = ["image_left", "image_front", "image_right"]
     cam_order = []
     for req_key in order_keys:
@@ -67,7 +72,7 @@ def _resolve_camera_order(
             if fallback in camera_names:
                 cam_name = fallback
         if cam_name is None:
-            raise ValueError(f"Missing camera mapping for '{req_key}'")
+            return [cam.get("name") for cam in camera_list]
         cam_order.append(cam_name)
     return cam_order
 
