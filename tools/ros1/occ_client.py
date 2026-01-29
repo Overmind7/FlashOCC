@@ -61,10 +61,14 @@ class OccClient(object):
             right_cv = self.bridge.imgmsg_to_cv2(right_msg, desired_encoding='bgr8')
             front_cv = self.bridge.imgmsg_to_cv2(front_msg, desired_encoding='bgr8')
 
+            left_rgb = cv2.cvtColor(left_cv, cv2.COLOR_BGR2RGB)
+            right_rgb = cv2.cvtColor(right_cv, cv2.COLOR_BGR2RGB)
+            front_rgb = cv2.cvtColor(front_cv, cv2.COLOR_BGR2RGB)
+
             files = {
-                'image_left': ('left.jpg', encode_jpeg(left_cv, self.jpeg_quality), 'image/jpeg'),
-                'image_right': ('right.jpg', encode_jpeg(right_cv, self.jpeg_quality), 'image/jpeg'),
-                'image_front': ('front.jpg', encode_jpeg(front_cv, self.jpeg_quality), 'image/jpeg'),
+                'image_left': ('left.jpg', encode_jpeg(left_rgb, self.jpeg_quality), 'image/jpeg'),
+                'image_right': ('right.jpg', encode_jpeg(right_rgb, self.jpeg_quality), 'image/jpeg'),
+                'image_front': ('front.jpg', encode_jpeg(front_rgb, self.jpeg_quality), 'image/jpeg'),
             }
             payload = {
                 'stamp_left': left_msg.header.stamp.to_sec(),
