@@ -35,8 +35,8 @@ def load_image(file_storage):
 def _default_image_map() -> Dict[str, str]:
     return {
         "left": "image_left",
-        "right": "image_right",
         "front": "image_front",
+        "right": "image_right",
     }
 
 
@@ -50,12 +50,35 @@ def _load_camera_list(metadata: Dict) -> List[Dict]:
     raise ValueError("Missing camera calibration (metadata.cameras or --camera-json)")
 
 
+def _resolve_camera_order(
+    camera_list: List[Dict],
+    image_keys: Dict[str, str],
+) -> List[str]:
+    camera_names = {cam.get("name") for cam in camera_list}
+    reverse_keys = {
+        req_key: cam_name for cam_name, req_key in image_keys.items() if cam_name in camera_names
+    }
+    order_keys = ["image_left", "image_front", "image_right"]
+    cam_order = []
+    for req_key in order_keys:
+        cam_name = reverse_keys.get(req_key)
+        if cam_name is None:
+            fallback = req_key.replace("image_", "")
+            if fallback in camera_names:
+                cam_name = fallback
+        if cam_name is None:
+            raise ValueError(f"Missing camera mapping for '{req_key}'")
+        cam_order.append(cam_name)
+    return cam_order
+
+
 def _prepare_frame(
     camera_list: List[Dict],
     images_by_key: Dict[str, Image.Image],
     input_size: Tuple[int, int],
     resize_test: float,
     image_keys: Dict[str, str],
+    order: List[str],
 ) -> Tuple[
     torch.Tensor,
     List[torch.Tensor],
@@ -73,8 +96,11 @@ def _prepare_frame(
     post_trans = []
     lidar2imgs = []
 
-    for cam in camera_list:
-        cam_name = cam.get("name")
+    camera_by_name = {cam.get("name"): cam for cam in camera_list}
+    for cam_name in order:
+        cam = camera_by_name.get(cam_name)
+        if cam is None:
+            raise ValueError(f"Missing camera config for '{cam_name}'")
         req_key = cam.get("image_key") or image_keys.get(cam_name, cam_name)
         img = images_by_key.get(req_key)
         if img is None:
@@ -123,6 +149,7 @@ def run_inference(images_by_key, metadata):
     camera_list = _load_camera_list(metadata)
     image_keys = _default_image_map()
     image_keys.update(metadata.get("image_keys", {}))
+    cam_order = _resolve_camera_order(camera_list, image_keys)
     (
         imgs,
         sensor2ego,
@@ -131,7 +158,14 @@ def run_inference(images_by_key, metadata):
         post_rots,
         post_trans,
         lidar2imgs,
-    ) = _prepare_frame(camera_list, images_by_key, MODEL_INPUT, MODEL_RESIZE_TEST, image_keys)
+    ) = _prepare_frame(
+        camera_list,
+        images_by_key,
+        MODEL_INPUT,
+        MODEL_RESIZE_TEST,
+        image_keys,
+        cam_order,
+    )
     bda = torch.eye(3).unsqueeze(0)
 
     imgs_b = imgs.unsqueeze(0).to(MODEL_DEVICE)
