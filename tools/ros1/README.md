@@ -46,17 +46,20 @@ rosrun <your_package> occ_client.py \
   _max_rate_hz:=5.0
 ```
 
-## Xtreme1 test sender
+## Xtreme1 ROS publisher
 
-If you want to validate the server without ROS, you can send Xtreme1-exported
-frames directly using the helper script below. It mirrors the client payload
-format and checks the server response.
+To simulate on-robot publishing, the helper script can publish Xtreme1 frames as
+ROS `sensor_msgs/Image` topics. This lets you feed `occ_client.py` with dataset
+frames and test the end-to-end flow with `occ_server.py`.
 
 ```bash
 python tools/ros1/occ_xtreme1_test.py \
   --xtreme1-root /data/xtreme1/scene01 \
-  --timestamp 000001 \
-  --server-url http://localhost:5801/infer
+  --run-all \
+  --topic-left /camera_image_left \
+  --topic-front /camera_image_front \
+  --topic-right /camera_image_right \
+  --ros-rate 5.0
 ```
 
 Notes:

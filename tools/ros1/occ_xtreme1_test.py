@@ -1,11 +1,8 @@
 #!/usr/bin/env python
 import argparse
 import json
-import mimetypes
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
-
-import requests
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 import sys
@@ -16,22 +13,43 @@ import custom_infer  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Send Xtreme1 frames to the ROS1 occ server and validate responses"
+        description=(
+            "Publish Xtreme1 frames as ROS camera topics to simulate on-robot inputs."
+        )
     )
     parser.add_argument("--xtreme1-root", required=True, help="Xtreme1 scene root")
-    parser.add_argument("--timestamp", help="Timestamp to send (without extension)")
-    parser.add_argument("--run-all", action="store_true", help="Send all timestamps")
+    parser.add_argument("--timestamp", help="Timestamp to publish (without extension)")
+    parser.add_argument("--run-all", action="store_true", help="Publish all timestamps")
     parser.add_argument("--img-ext", default=None, help="Image extension override")
     parser.add_argument("--cameras", nargs="*", default=None, help="Camera subset")
     parser.add_argument("--camera-left", help="Camera name to map to left")
     parser.add_argument("--camera-front", help="Camera name to map to front")
     parser.add_argument("--camera-right", help="Camera name to map to right")
     parser.add_argument(
-        "--server-url",
-        default="http://localhost:5801/infer",
-        help="Inference server URL",
+        "--topic-left", default="/camera_image_left", help="ROS topic for left camera"
     )
-    parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument(
+        "--topic-front", default="/camera_image_front", help="ROS topic for front camera"
+    )
+    parser.add_argument(
+        "--topic-right", default="/camera_image_right", help="ROS topic for right camera"
+    )
+    parser.add_argument(
+        "--ros-rate",
+        type=float,
+        default=5.0,
+        help="Publish rate (Hz)",
+    )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Loop over timestamps when publishing to ROS",
+    )
+    parser.add_argument(
+        "--use-timestamp-stamp",
+        action="store_true",
+        help="Use dataset timestamp as ROS header.stamp if possible",
+    )
     return parser.parse_args()
 
 
@@ -67,31 +85,6 @@ def _resolve_camera_triplet(
     if len(cameras) < 3:
         raise ValueError("Need at least 3 cameras to build left/front/right triplet")
     return cameras[0], cameras[1], cameras[2]
-
-
-def _build_request_payload(
-    left_cam: Dict,
-    front_cam: Dict,
-    right_cam: Dict,
-) -> Tuple[Dict, Dict]:
-    image_keys = {
-        left_cam["name"]: "image_left",
-        front_cam["name"]: "image_front",
-        right_cam["name"]: "image_right",
-    }
-    cameras = []
-    for cam, key in (
-        (left_cam, "image_left"),
-        (front_cam, "image_front"),
-        (right_cam, "image_right"),
-    ):
-        cam_meta = {
-            k: v for k, v in cam.items() if k not in {"img_path"}
-        }
-        cam_meta["image_key"] = key
-        cameras.append(cam_meta)
-    metadata = {"cameras": cameras, "image_keys": image_keys}
-    return metadata, image_keys
 
 
 def _find_scene_root(xtreme1_root: Path) -> Path:
@@ -150,45 +143,15 @@ def _load_xtreme1_compat(
         return camera_list
 
 
-def _load_file_bytes(path: Path) -> Tuple[bytes, str]:
-    data = path.read_bytes()
-    content_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
-    return data, content_type
+def _stamp_from_timestamp(timestamp: str):
+    try:
+        ts_float = float(timestamp)
+    except ValueError:
+        return None
+    return ts_float
 
 
-def _send_request(
-    server_url: str,
-    metadata: Dict,
-    image_paths: Dict[str, Path],
-    timeout: float,
-) -> Dict:
-    files = {}
-    for key, path in image_paths.items():
-        data, content_type = _load_file_bytes(path)
-        files[key] = (path.name, data, content_type)
-    response = requests.post(
-        server_url,
-        files=files,
-        data={"json": json.dumps(metadata)},
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def _validate_response(result: Dict, expected_cameras: int) -> None:
-    status = result.get("status")
-    if status != "ok":
-        raise RuntimeError(f"Server error: {result}")
-    if result.get("num_cameras") != expected_cameras:
-        raise RuntimeError(
-            f"Unexpected num_cameras={result.get('num_cameras')} (expected {expected_cameras})"
-        )
-    if not result.get("occ_shape"):
-        raise RuntimeError("Missing occ_shape in response")
-
-
-def run_for_timestamp(
+def publish_for_timestamp(
     scene_root: Path,
     timestamp: str,
     img_ext: Optional[str],
@@ -196,27 +159,38 @@ def run_for_timestamp(
     camera_left: Optional[str],
     camera_front: Optional[str],
     camera_right: Optional[str],
-    server_url: str,
-    timeout: float,
+    topic_left: str,
+    topic_front: str,
+    topic_right: str,
+    use_timestamp_stamp: bool,
+    bridge,
+    publishers: Dict[str, "rospy.Publisher"],
 ) -> None:
+    import cv2
+    import rospy
+
     camera_list = _load_xtreme1_compat(
         scene_root, timestamp, img_ext, keep_cams
     )
     left_cam, front_cam, right_cam = _resolve_camera_triplet(
         camera_list, camera_left, camera_front, camera_right
     )
-    metadata, image_keys = _build_request_payload(left_cam, front_cam, right_cam)
     image_paths = {
-        image_keys[left_cam["name"]]: Path(left_cam["img_path"]),
-        image_keys[front_cam["name"]]: Path(front_cam["img_path"]),
-        image_keys[right_cam["name"]]: Path(right_cam["img_path"]),
+        topic_left: Path(left_cam["img_path"]),
+        topic_front: Path(front_cam["img_path"]),
+        topic_right: Path(right_cam["img_path"]),
     }
-    result = _send_request(server_url, metadata, image_paths, timeout)
-    _validate_response(result, expected_cameras=len(metadata["cameras"]))
-    print(
-        f"[OK] {scene_root.name}/{timestamp} -> "
-        f"occ_shape={result.get('occ_shape')} elapsed={result.get('elapsed_sec'):.3f}s"
-    )
+    stamp_value = _stamp_from_timestamp(timestamp) if use_timestamp_stamp else None
+    ros_stamp = rospy.Time.from_sec(stamp_value) if stamp_value else rospy.Time.now()
+    for topic, path in image_paths.items():
+        cv_image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if cv_image is None:
+            raise RuntimeError(f"Failed to read image: {path}")
+        msg = bridge.cv2_to_imgmsg(cv_image, encoding="bgr8")
+        msg.header.stamp = ros_stamp
+        msg.header.frame_id = Path(topic).name
+        publishers[topic].publish(msg)
+    print(f"[ROS] Published {scene_root.name}/{timestamp} to {topic_left}, {topic_front}, {topic_right}")
 
 
 def main() -> None:
@@ -232,18 +206,38 @@ def main() -> None:
     if not timestamps:
         raise ValueError("No timestamps found to send")
 
-    for ts in timestamps:
-        run_for_timestamp(
-            scene_root=scene_root,
-            timestamp=ts,
-            img_ext=args.img_ext,
-            keep_cams=args.cameras,
-            camera_left=args.camera_left,
-            camera_front=args.camera_front,
-            camera_right=args.camera_right,
-            server_url=args.server_url,
-            timeout=args.timeout,
-        )
+    import rospy
+    from cv_bridge import CvBridge
+    from sensor_msgs.msg import Image
+
+    rospy.init_node("occ_xtreme1_publisher", anonymous=True)
+    bridge = CvBridge()
+    publishers = {
+        args.topic_left: rospy.Publisher(args.topic_left, Image, queue_size=5),
+        args.topic_front: rospy.Publisher(args.topic_front, Image, queue_size=5),
+        args.topic_right: rospy.Publisher(args.topic_right, Image, queue_size=5),
+    }
+    rate = rospy.Rate(args.ros_rate)
+    while not rospy.is_shutdown():
+        for ts in timestamps:
+            publish_for_timestamp(
+                scene_root=scene_root,
+                timestamp=ts,
+                img_ext=args.img_ext,
+                keep_cams=args.cameras,
+                camera_left=args.camera_left,
+                camera_front=args.camera_front,
+                camera_right=args.camera_right,
+                topic_left=args.topic_left,
+                topic_front=args.topic_front,
+                topic_right=args.topic_right,
+                use_timestamp_stamp=args.use_timestamp_stamp,
+                bridge=bridge,
+                publishers=publishers,
+            )
+            rate.sleep()
+        if not args.loop:
+            break
 
 
 if __name__ == "__main__":
