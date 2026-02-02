@@ -45,3 +45,22 @@ rosrun <your_package> occ_client.py \
   _occ_topic:=/occ \
   _max_rate_hz:=5.0
 ```
+
+## Xtreme1 test sender
+
+If you want to validate the server without ROS, you can send Xtreme1-exported
+frames directly using the helper script below. It mirrors the client payload
+format and checks the server response.
+
+```bash
+python tools/ros1/occ_xtreme1_test.py \
+  --xtreme1-root /data/xtreme1/scene01 \
+  --timestamp 000001 \
+  --server-url http://localhost:5801/infer
+```
+
+Notes:
+- `--xtreme1-root` can point to a parent folder containing multiple scenes, as
+  long as it only contains one scene.
+- The script supports camera folder names such as `camera_image_left` and
+  `camera_image_right` that match the Xtreme1 `camera_config` keys.
