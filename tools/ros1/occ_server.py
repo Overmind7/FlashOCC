@@ -23,10 +23,6 @@ MODEL_DEVICE = "cpu"
 MODEL_INPUT = (256, 704)
 MODEL_RESIZE_TEST = 0.0
 DEFAULT_CAMERAS: Optional[List[Dict]] = None
-POINT_CLOUD_RANGE: Optional[List[float]] = None
-VOXEL_SIZE: Optional[List[float]] = None
-ROS_PUBLISHER = None
-ROS_FRAME_ID = "map"
 OCC_CLASS_NAMES = ['others', 'barrier', 'driveable_surface', 'pedestrian', 'free']
 
 
@@ -249,7 +245,6 @@ def run_inference(images_by_key, metadata):
         occ_map = probs.argmax(dim=-1).squeeze(0).cpu().numpy().astype(np.uint8)
 
     class_hist = np.bincount(occ_map.reshape(-1), minlength=occ_pred.shape[-1]).tolist()
-    _publish_occ_pointcloud(occ_map)
     return {
         "status": "ok",
         "num_cameras": len(camera_list),
@@ -288,7 +283,6 @@ def infer():
 
 def _init_model(args: argparse.Namespace):
     global MODEL, MODEL_DEVICE, MODEL_INPUT, MODEL_RESIZE_TEST, DEFAULT_CAMERAS
-    global POINT_CLOUD_RANGE, VOXEL_SIZE, ROS_PUBLISHER, ROS_FRAME_ID
     MODEL_DEVICE = args.device
     if args.camera_json:
         DEFAULT_CAMERAS = _load_camera_json(args.camera_json)
@@ -299,14 +293,6 @@ def _init_model(args: argparse.Namespace):
     data_cfg = cfg.get("data_config", {})
     MODEL_INPUT = tuple(data_cfg.get("input_size", (256, 704)))
     MODEL_RESIZE_TEST = data_cfg.get("resize_test", 0.0)
-    POINT_CLOUD_RANGE, VOXEL_SIZE = _extract_voxel_config(cfg)
-    if args.ros_topic:
-        import rospy
-        from sensor_msgs.msg import PointCloud2
-
-        ROS_FRAME_ID = args.ros_frame
-        rospy.init_node("flashocc_server", anonymous=True)
-        ROS_PUBLISHER = rospy.Publisher(args.ros_topic, PointCloud2, queue_size=1)
 
 
 if __name__ == '__main__':
@@ -316,8 +302,6 @@ if __name__ == '__main__':
     parser.add_argument("--camera-json", help="Camera calibration JSON")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--port", type=int, default=5801)
-    parser.add_argument("--ros-topic", help="ROS1 PointCloud2 topic to publish occupancy")
-    parser.add_argument("--ros-frame", default="map", help="ROS frame id for occupancy pointcloud")
     args = parser.parse_args()
     _init_model(args)
     app.run(host='0.0.0.0', port=args.port)
