@@ -4,11 +4,119 @@ import json
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-import sys
 
-sys.path.insert(0, str(REPO_ROOT / "tools"))
-import custom_infer  # noqa: E402
+def _quat_wxyz_to_rot(q: List[float]) -> List[List[float]]:
+    w, x, y, z = q
+    return [
+        [1 - 2 * (y**2 + z**2), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x**2 + z**2), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x**2 + y**2)],
+    ]
+
+
+def _se3_from_quat_tran(q: List[float], t: List[float]) -> List[List[float]]:
+    rot = _quat_wxyz_to_rot(q)
+    return [
+        [rot[0][0], rot[0][1], rot[0][2], float(t[0])],
+        [rot[1][0], rot[1][1], rot[1][2], float(t[1])],
+        [rot[2][0], rot[2][1], rot[2][2], float(t[2])],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+
+
+def _matmul_4x4(a: List[List[float]], b: List[List[float]]) -> List[List[float]]:
+    return [
+        [
+            sum(a[i][k] * b[k][j] for k in range(4))
+            for j in range(4)
+        ]
+        for i in range(4)
+    ]
+
+
+def _find_xtreme1_image(img_root: Path, timestamp: str, ext: Optional[str]) -> Path:
+    if ext:
+        candidate = img_root / f"{timestamp}{ext}"
+        if candidate.exists():
+            return candidate
+    else:
+        matches = list(img_root.glob(f"{timestamp}.*"))
+        if matches:
+            return matches[0]
+    raise FileNotFoundError(f"Cannot find image for {timestamp} under {img_root}")
+
+
+def _load_xtreme1(
+    scene_root: Path,
+    timestamp: str,
+    img_ext: Optional[str],
+    keep_cams: Optional[List[str]],
+) -> List[Dict]:
+    lidar_cfg_path = scene_root / "lidar_config" / f"{timestamp}.json"
+    cam_cfg_path = scene_root / "camera_config" / f"{timestamp}.json"
+    if not lidar_cfg_path.exists():
+        raise FileNotFoundError(f"Missing lidar config: {lidar_cfg_path}")
+    if not cam_cfg_path.exists():
+        raise FileNotFoundError(f"Missing camera config: {cam_cfg_path}")
+
+    lidar_cfg = json.loads(lidar_cfg_path.read_text())
+    cam_cfg = json.loads(cam_cfg_path.read_text())
+
+    ego_pose = _se3_from_quat_tran(
+        lidar_cfg["ego_pose"]["rotation"], lidar_cfg["ego_pose"]["translation"]
+    )
+    lidar_sensor = _se3_from_quat_tran(
+        lidar_cfg["calibrated_sensor"]["rotation"],
+        lidar_cfg["calibrated_sensor"]["translation"],
+    )
+    ego2global = _matmul_4x4(ego_pose, lidar_sensor)
+    camera_list = []
+    for cam_name, cam_vals in cam_cfg.items():
+        if keep_cams and cam_name not in keep_cams:
+            continue
+        cam_sensor = _se3_from_quat_tran(cam_vals["rotation"], cam_vals["translation"])
+        img_path = _find_xtreme1_image(scene_root / cam_name, timestamp, img_ext)
+        camera_list.append(
+            {
+                "name": cam_name,
+                "img_path": str(img_path),
+                "intrinsic": cam_vals["camera_intrinsic"],
+                "extrinsic": cam_sensor,
+                "ego2global": ego2global,
+            }
+        )
+    if not camera_list:
+        raise ValueError("No cameras loaded from Xtreme1 config")
+    return camera_list
+
+
+def _discover_xtreme1_groups(root: Path) -> List[Tuple[str, Path]]:
+    def is_scene(path: Path) -> bool:
+        return (path / "camera_config").is_dir() and (path / "lidar_config").is_dir()
+
+    if is_scene(root):
+        return [(root.name, root)]
+
+    groups = []
+    for sub in sorted(p for p in root.iterdir() if p.is_dir()):
+        if is_scene(sub):
+            groups.append((sub.name, sub))
+    if not groups:
+        raise FileNotFoundError(
+            f"No Xtreme1 scenes found under {root}; expected camera_config/ and lidar_config/"
+        )
+    return groups
+
+
+def _list_xtreme1_timestamps(scene_root: Path) -> List[str]:
+    cam_dir = scene_root / "camera_config"
+    lidar_dir = scene_root / "lidar_config"
+    timestamps = []
+    for cam_json in cam_dir.glob("*.json"):
+        ts = cam_json.stem
+        if (lidar_dir / f"{ts}.json").exists():
+            timestamps.append(ts)
+    return sorted(timestamps)
 
 
 def parse_args() -> argparse.Namespace:
@@ -90,7 +198,7 @@ def _resolve_camera_triplet(
 def _find_scene_root(xtreme1_root: Path) -> Path:
     if (xtreme1_root / "camera_config").is_dir():
         return xtreme1_root
-    groups = custom_infer.discover_xtreme1_groups(xtreme1_root)
+    groups = _discover_xtreme1_groups(xtreme1_root)
     if len(groups) != 1:
         names = [name for name, _ in groups]
         raise ValueError(
@@ -115,25 +223,23 @@ def _load_xtreme1_compat(
 ) -> List[Dict]:
     """Load Xtreme1 cameras, falling back when lidar_config is missing."""
     try:
-        return custom_infer.load_xtreme1(str(scene_root), timestamp, img_ext, keep_cams)
+        return _load_xtreme1(scene_root, timestamp, img_ext, keep_cams)
     except FileNotFoundError:
         cam_cfg = _load_xtreme1_camera_config(scene_root, timestamp)
         camera_list = []
         for cam_name, cam_vals in cam_cfg.items():
             if keep_cams and cam_name not in keep_cams:
                 continue
-            img_path = custom_infer.find_xtreme1_image(
-                scene_root / cam_name, timestamp, img_ext
-            )
+            img_path = _find_xtreme1_image(scene_root / cam_name, timestamp, img_ext)
             camera_list.append(
                 {
                     "name": cam_name,
                     "img_path": str(img_path),
                     "intrinsic": cam_vals["camera_intrinsic"],
-                    "extrinsic": custom_infer.se3_from_quat_tran(
+                    "extrinsic": _se3_from_quat_tran(
                         cam_vals["rotation"], cam_vals["translation"]
                     ),
-                    "ego2global": custom_infer.se3_from_quat_tran(
+                    "ego2global": _se3_from_quat_tran(
                         [1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
                     ),
                 }
@@ -197,7 +303,7 @@ def main() -> None:
     args = parse_args()
     scene_root = _find_scene_root(Path(args.xtreme1_root))
     if args.run_all:
-        timestamps = custom_infer.list_xtreme1_timestamps(scene_root)
+        timestamps = _list_xtreme1_timestamps(scene_root)
     elif args.timestamp:
         timestamps = [args.timestamp]
     else:
