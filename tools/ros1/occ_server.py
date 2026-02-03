@@ -23,6 +23,11 @@ MODEL_DEVICE = "cpu"
 MODEL_INPUT = (256, 704)
 MODEL_RESIZE_TEST = 0.0
 DEFAULT_CAMERAS: Optional[List[Dict]] = None
+POINT_CLOUD_RANGE: Optional[List[float]] = None
+VOXEL_SIZE: Optional[List[float]] = None
+ROS_PUBLISHER = None
+ROS_FRAME_ID = "map"
+OCC_CLASS_NAMES = ['others', 'barrier', 'driveable_surface', 'pedestrian', 'free']
 
 
 def load_image(file_storage):
@@ -77,6 +82,65 @@ def _load_camera_json(camera_json: str) -> List[Dict]:
     if isinstance(data, dict):
         return _convert_xtreme1_camera_dict(data)
     return custom_infer.load_calib(camera_json)
+
+
+def _extract_voxel_config(cfg: Dict) -> Tuple[List[float], List[float]]:
+    point_cloud_range = cfg.get("point_cloud_range")
+    voxel_size = cfg.get("voxel_size")
+    if point_cloud_range is None or voxel_size is None:
+        grid_config = cfg.get("grid_config", {})
+        if point_cloud_range is None:
+            x_cfg = grid_config.get("x")
+            y_cfg = grid_config.get("y")
+            z_cfg = grid_config.get("z")
+            if x_cfg and y_cfg and z_cfg:
+                point_cloud_range = [x_cfg[0], y_cfg[0], z_cfg[0], x_cfg[1], y_cfg[1], z_cfg[1]]
+        if voxel_size is None and grid_config:
+            voxel_size = [
+                grid_config.get("x", [0.0, 0.0, 1.0])[2],
+                grid_config.get("y", [0.0, 0.0, 1.0])[2],
+                grid_config.get("z", [0.0, 0.0, 1.0])[2],
+            ]
+    if point_cloud_range is None or voxel_size is None:
+        raise ValueError("Missing voxel configuration (point_cloud_range/voxel_size) in config")
+    return point_cloud_range, voxel_size
+
+
+def _occ_to_points(
+    occ_map: np.ndarray,
+    point_cloud_range: List[float],
+    voxel_size: List[float],
+) -> np.ndarray:
+    mask = occ_map != 0
+    if not np.any(mask):
+        return np.empty((0, 4), dtype=np.float32)
+    idxs = np.column_stack(np.where(mask))
+    x = point_cloud_range[0] + idxs[:, 0] * voxel_size[0]
+    y = point_cloud_range[1] + idxs[:, 1] * voxel_size[1]
+    z = point_cloud_range[2] + idxs[:, 2] * voxel_size[2]
+    labels = occ_map[mask].astype(np.float32)
+    return np.column_stack((x, y, z, labels)).astype(np.float32)
+
+
+def _publish_occ_pointcloud(occ_map: np.ndarray) -> None:
+    if ROS_PUBLISHER is None or POINT_CLOUD_RANGE is None or VOXEL_SIZE is None:
+        return
+    from sensor_msgs.msg import PointCloud2, PointField
+    from sensor_msgs import point_cloud2
+    import rospy
+
+    points = _occ_to_points(occ_map, POINT_CLOUD_RANGE, VOXEL_SIZE)
+    fields = [
+        PointField(name='x', offset=0, datatype=PointField.FLOAT32, count=1),
+        PointField(name='y', offset=4, datatype=PointField.FLOAT32, count=1),
+        PointField(name='z', offset=8, datatype=PointField.FLOAT32, count=1),
+        PointField(name='label', offset=12, datatype=PointField.FLOAT32, count=1),
+    ]
+    header = rospy.Header()
+    header.stamp = rospy.Time.now()
+    header.frame_id = ROS_FRAME_ID
+    cloud_msg = point_cloud2.create_cloud(header, fields, points)
+    ROS_PUBLISHER.publish(cloud_msg)
 
 
 def _default_image_map() -> Dict[str, str]:
@@ -244,11 +308,13 @@ def run_inference(images_by_key, metadata):
         occ_map = probs.argmax(dim=-1).squeeze(0).cpu().numpy().astype(np.uint8)
 
     class_hist = np.bincount(occ_map.reshape(-1), minlength=occ_pred.shape[-1]).tolist()
+    _publish_occ_pointcloud(occ_map)
     return {
         "status": "ok",
         "num_cameras": len(camera_list),
         "occ_shape": list(occ_map.shape),
         "class_hist": class_hist,
+        "class_names": OCC_CLASS_NAMES,
         "metadata": metadata,
         "lidar2img": lidar2imgs.cpu().numpy().tolist(),
         "occ": occ_map.tolist() if metadata.get("return_occ") else None,
@@ -281,6 +347,7 @@ def infer():
 
 def _init_model(args: argparse.Namespace):
     global MODEL, MODEL_DEVICE, MODEL_INPUT, MODEL_RESIZE_TEST, DEFAULT_CAMERAS
+    global POINT_CLOUD_RANGE, VOXEL_SIZE, ROS_PUBLISHER, ROS_FRAME_ID
     MODEL_DEVICE = args.device
     if args.camera_json:
         DEFAULT_CAMERAS = _load_camera_json(args.camera_json)
@@ -291,6 +358,14 @@ def _init_model(args: argparse.Namespace):
     data_cfg = cfg.get("data_config", {})
     MODEL_INPUT = tuple(data_cfg.get("input_size", (256, 704)))
     MODEL_RESIZE_TEST = data_cfg.get("resize_test", 0.0)
+    POINT_CLOUD_RANGE, VOXEL_SIZE = _extract_voxel_config(cfg)
+    if args.ros_topic:
+        import rospy
+        from sensor_msgs.msg import PointCloud2
+
+        ROS_FRAME_ID = args.ros_frame
+        rospy.init_node("flashocc_server", anonymous=True)
+        ROS_PUBLISHER = rospy.Publisher(args.ros_topic, PointCloud2, queue_size=1)
 
 
 if __name__ == '__main__':
@@ -300,6 +375,8 @@ if __name__ == '__main__':
     parser.add_argument("--camera-json", help="Camera calibration JSON")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--port", type=int, default=5801)
+    parser.add_argument("--ros-topic", help="ROS1 PointCloud2 topic to publish occupancy")
+    parser.add_argument("--ros-frame", default="map", help="ROS frame id for occupancy pointcloud")
     args = parser.parse_args()
     _init_model(args)
     app.run(host='0.0.0.0', port=args.port)
