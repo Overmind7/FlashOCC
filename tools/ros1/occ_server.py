@@ -32,6 +32,53 @@ def load_image(file_storage):
     return Image.open(image_bytes).convert('RGB')
 
 
+def _quat_wxyz_to_rot(q: List[float]) -> np.ndarray:
+    w, x, y, z = q
+    return np.array([
+        [1 - 2 * (y**2 + z**2), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x**2 + z**2), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x**2 + y**2)],
+    ], dtype=np.float32)
+
+
+def _se3_from_quat_tran(q: List[float], t: List[float]) -> np.ndarray:
+    rot = _quat_wxyz_to_rot(q)
+    pose = np.eye(4, dtype=np.float32)
+    pose[:3, :3] = rot
+    pose[:3, 3] = np.asarray(t, dtype=np.float32)
+    return pose
+
+
+def _camera_key_to_image_key(camera_key: str) -> str:
+    if camera_key.startswith("camera_"):
+        return camera_key.replace("camera_", "", 1)
+    return camera_key
+
+
+def _convert_xtreme1_camera_dict(camera_dict: Dict) -> List[Dict]:
+    cameras = []
+    for name, entry in camera_dict.items():
+        extrinsic = _se3_from_quat_tran(entry["rotation"], entry["translation"])
+        cameras.append(
+            {
+                "name": name,
+                "image_key": _camera_key_to_image_key(name),
+                "intrinsic": entry["camera_intrinsic"],
+                "extrinsic": extrinsic.tolist(),
+                "ego2global": np.eye(4, dtype=np.float32).tolist(),
+            }
+        )
+    return cameras
+
+
+def _load_camera_json(camera_json: str) -> List[Dict]:
+    with open(camera_json, "r") as f:
+        data = json.load(f)
+    if isinstance(data, dict):
+        return _convert_xtreme1_camera_dict(data)
+    return custom_infer.load_calib(camera_json)
+
+
 def _default_image_map() -> Dict[str, str]:
     return {
         "left": "image_left",
@@ -236,7 +283,7 @@ def _init_model(args: argparse.Namespace):
     global MODEL, MODEL_DEVICE, MODEL_INPUT, MODEL_RESIZE_TEST, DEFAULT_CAMERAS
     MODEL_DEVICE = args.device
     if args.camera_json:
-        DEFAULT_CAMERAS = custom_infer.load_calib(args.camera_json)
+        DEFAULT_CAMERAS = _load_camera_json(args.camera_json)
         for cam in DEFAULT_CAMERAS:
             cam.pop("img_path", None)
     MODEL, cfg = custom_infer.build_model(args.config, args.device)
