@@ -1,7 +1,9 @@
 # ROS1 FlashOcc Inference Server
 
 This folder provides a simple ROS1 client/server bridge that runs FlashOcc
-occupancy inference behind a Flask endpoint.
+occupancy inference behind a Flask endpoint. The server only returns model
+outputs, while voxel conversion and ROS pointcloud publishing are handled by
+the client.
 
 ## Server
 
@@ -26,7 +28,7 @@ The `/infer` endpoint expects multipart form data with:
 - `json`: Optional JSON string. Useful fields:
   - `cameras`: List of camera dicts (same schema as `camera-json`).
   - `image_keys`: Mapping from camera name to uploaded file key.
-  - `return_occ`: Boolean flag to include the full occupancy grid in the response.
+- `return_occ`: Boolean flag to include the full occupancy grid in the response.
 
 If `--camera-json` is provided, its calibration is used when `cameras` is
 omitted in the request.
@@ -34,7 +36,9 @@ omitted in the request.
 ## Client (ROS1)
 
 Run the ROS client node to collect synchronized camera frames and send them to
-the server:
+the server. If you want a voxelized pointcloud, configure the voxel settings
+on the client; it will request the occupancy grid and publish a PointCloud2
+message.
 
 ```bash
 rosrun <your_package> occ_client.py \
@@ -43,6 +47,9 @@ rosrun <your_package> occ_client.py \
   _camera_right:=/camera_image_right \
   _camera_front:=/camera_image_front \
   _occ_topic:=/occ \
+  _occ_cloud_topic:=/occ_cloud \
+  _occ_cloud_frame:=map \
+  _config_path:=projects/configs/flashocc/flashocc-r50.py \
   _max_rate_hz:=5.0
 ```
 
