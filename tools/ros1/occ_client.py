@@ -48,7 +48,7 @@ def _load_voxel_config(config_path: str):
 
 
 def _occ_to_points(occ_map: np.ndarray, point_cloud_range, voxel_size):
-    mask = occ_map != 0
+    mask = occ_map != 4
     if not np.any(mask):
         return np.empty((0, 4), dtype=np.float32)
     idxs = np.column_stack(np.where(mask))
