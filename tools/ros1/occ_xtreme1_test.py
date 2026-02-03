@@ -195,17 +195,11 @@ def _resolve_camera_triplet(
     return cameras[0], cameras[1], cameras[2]
 
 
-def _find_scene_root(xtreme1_root: Path) -> Path:
+def _find_scene_roots(xtreme1_root: Path) -> List[Path]:
     if (xtreme1_root / "camera_config").is_dir():
-        return xtreme1_root
+        return [xtreme1_root]
     groups = _discover_xtreme1_groups(xtreme1_root)
-    if len(groups) != 1:
-        names = [name for name, _ in groups]
-        raise ValueError(
-            "xtreme1-root points to multiple scenes, please provide a scene folder: "
-            f"{names}"
-        )
-    return groups[0][1]
+    return [scene_root for _, scene_root in groups]
 
 
 def _load_xtreme1_camera_config(scene_root: Path, timestamp: str) -> Dict:
@@ -301,20 +295,13 @@ def publish_for_timestamp(
 
 def main() -> None:
     args = parse_args()
-    scene_root = _find_scene_root(Path(args.xtreme1_root))
-    if args.run_all:
-        timestamps = _list_xtreme1_timestamps(scene_root)
-    elif args.timestamp:
-        timestamps = [args.timestamp]
-    else:
-        raise ValueError("Provide --timestamp or --run-all")
-
-    if not timestamps:
-        raise ValueError("No timestamps found to send")
-
     import rospy
     from cv_bridge import CvBridge
     from sensor_msgs.msg import Image
+
+    scene_roots = _find_scene_roots(Path(args.xtreme1_root))
+    if not scene_roots:
+        raise ValueError("No scenes found to send")
 
     rospy.init_node("occ_xtreme1_publisher", anonymous=True)
     bridge = CvBridge()
@@ -325,23 +312,34 @@ def main() -> None:
     }
     rate = rospy.Rate(args.ros_rate)
     while not rospy.is_shutdown():
-        for ts in timestamps:
-            publish_for_timestamp(
-                scene_root=scene_root,
-                timestamp=ts,
-                img_ext=args.img_ext,
-                keep_cams=args.cameras,
-                camera_left=args.camera_left,
-                camera_front=args.camera_front,
-                camera_right=args.camera_right,
-                topic_left=args.topic_left,
-                topic_front=args.topic_front,
-                topic_right=args.topic_right,
-                use_timestamp_stamp=args.use_timestamp_stamp,
-                bridge=bridge,
-                publishers=publishers,
-            )
-            rate.sleep()
+        for scene_root in scene_roots:
+            if args.run_all:
+                timestamps = _list_xtreme1_timestamps(scene_root)
+            elif args.timestamp:
+                timestamps = [args.timestamp]
+            else:
+                raise ValueError("Provide --timestamp or --run-all")
+
+            if not timestamps:
+                raise ValueError(f"No timestamps found for scene {scene_root}")
+
+            for ts in timestamps:
+                publish_for_timestamp(
+                    scene_root=scene_root,
+                    timestamp=ts,
+                    img_ext=args.img_ext,
+                    keep_cams=args.cameras,
+                    camera_left=args.camera_left,
+                    camera_front=args.camera_front,
+                    camera_right=args.camera_right,
+                    topic_left=args.topic_left,
+                    topic_front=args.topic_front,
+                    topic_right=args.topic_right,
+                    use_timestamp_stamp=args.use_timestamp_stamp,
+                    bridge=bridge,
+                    publishers=publishers,
+                )
+                rate.sleep()
         if not args.loop:
             break
 
